@@ -1170,7 +1170,7 @@ local function compile_ast(opcodes, use_storm, global_protos, global_protos_B, i
                     if target.AstType == 'MemberExpr' then
                         compile_expr({ AstType = 'StringExpr', Value = { Constant = target.Ident.Data } }, idx_reg, env)
                     else
-                        compile_expr(target.Index, idx_reg, val_reg)
+                        compile_expr(target.Index, idx_reg, env)
                     end
                     emit(env, "SETTABLE", t_reg, idx_reg, val_reg)
                     env:free_reg(t_reg)
@@ -2538,7 +2538,8 @@ _G.compile_ast = compile_ast
 _G.CompilerEnv = CompilerEnv
 _G.VM_ACTIONS = VM_ACTIONS
 
-_G.obfuscate = function(source_code, anti_debug)
+_G.obfuscate = function(source_code, anti_debug, depth)
+    depth = depth or 0
     if anti_debug == nil then anti_debug = true end
     if source_code:find("@antiDebug false") then
         anti_debug = false
@@ -2594,6 +2595,10 @@ _G.obfuscate = function(source_code, anti_debug)
         "    return " .. run_vm_A_name .. "(" .. protos_name .. "[#" .. protos_name .. "], {})\n" ..
         "end\n"
 
+    if depth < 1 then
+        wrapper_code = _G.obfuscate(wrapper_code, anti_debug, depth + 1)
+    end
+
     -- Encrypt wrapper_code using LCG rolling key cipher
     local key = seed
     local enc_bytes = {}
@@ -2614,18 +2619,43 @@ local vm_a_data = "]=] .. table.concat(escaped_A) .. [=["
 local vm_b_data = "]=] .. table.concat(escaped_B) .. [=["
 local encrypted_vm = "]=] .. table.concat(escaped_vm) .. [=["
 
+-- Hermetic Load Sealing
+local load_func = loadstring or load
+local pcall_func = pcall
+if pcall_func(string.dump, load_func) or pcall_func(string.dump, pcall_func) then
+    error("Security violation: Hook detected")
+end
+
 local function decrypt(str, seed)
     local dec = {}
     local key = seed
+    local env_get = _G or _ENV
     for i = 1, #str do
-        key = (key * 1103515245 + 12345) & 0xFFFFFFFF
+        -- Debug API Active Poisoning
+        local has_hook = false
+        local dbg = env_get.debug or (pcall_func and select(2, pcall_func(require, "debug")))
+        if dbg and dbg.gethook and dbg.gethook() then
+            has_hook = true
+        end
+        if dbg and dbg.getinfo then
+            local success, info = pcall_func(dbg.getinfo, 2, "f")
+            if success and info and info.func then
+                has_hook = true
+            end
+        end
+
+        if has_hook then
+            key = (key * 999999 + 12345) & 0xFFFFFFFF
+        else
+            key = (key * 1103515245 + 12345) & 0xFFFFFFFF
+        end
+
         local b = string.byte(str, i)
         dec[i] = string.char((b ~ (key >> 16)) & 0xFF)
     end
     return table.concat(dec)
 end
 
-local load_func = loadstring or load
 local vm_factory = load_func(decrypt(encrypted_vm, ]=] .. seed .. [=[))()
 return vm_factory(vm_a_data, vm_b_data, ]=] .. seed .. [=[)
 ]=]
