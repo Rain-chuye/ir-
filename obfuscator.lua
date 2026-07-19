@@ -182,12 +182,12 @@ local function LexLua(src)
 
         if c == '' then
             toEmit = { Type = 'Eof' }
-        elseif UpperChars[c] or LowerChars[c] or c == '_' then
+        elseif UpperChars[c] or LowerChars[c] or c == '_' or (c ~= '' and string.byte(c) >= 128) then
             local start = p
             repeat
                 get()
                 c = peek()
-            until not (UpperChars[c] or LowerChars[c] or Digits[c] or c == '_')
+            until not (UpperChars[c] or LowerChars[c] or Digits[c] or c == '_' or (c ~= '' and string.byte(c) >= 128))
             local dat = src:sub(start, p-1)
             if Keywords[dat] then
                 toEmit = {Type = 'Keyword', Data = dat}
@@ -2584,12 +2584,51 @@ _G.obfuscate = function(source_code, anti_debug)
     local protos_B_name = names._0x_protos_B
     local unpack_proto_list_name = names._0x_unpack_proto_list
 
-    local final_output = runner_code .. "\n" ..
-        "local vm_a_data = \"" .. table.concat(escaped_A) .. "\"\n" ..
-        "local vm_b_data = \"" .. table.concat(escaped_B) .. "\"\n\n" ..
-        protos_name .. " = " .. unpack_proto_list_name .. "(vm_a_data, " .. seed .. ")\n" ..
-        protos_B_name .. " = " .. unpack_proto_list_name .. "(vm_b_data, " .. seed .. ")\n\n" ..
-        "return " .. run_vm_A_name .. "(" .. protos_name .. "[#" .. protos_name .. "], {})\n"
+    local wrapper_code = "return function(vm_a_data, vm_b_data, seed)\n" ..
+        "    local " .. run_vm_A_name .. ", " .. names._0x_run_vm_B .. "\n" ..
+        "    local " .. names._0x_create_closure_A .. ", " .. names._0x_create_closure_B .. "\n" ..
+        "    local " .. protos_name .. ", " .. protos_B_name .. "\n\n" ..
+        runner_code .. "\n\n" ..
+        "    " .. protos_name .. " = " .. unpack_proto_list_name .. "(vm_a_data, seed)\n" ..
+        "    " .. protos_B_name .. " = " .. unpack_proto_list_name .. "(vm_b_data, seed)\n\n" ..
+        "    return " .. run_vm_A_name .. "(" .. protos_name .. "[#" .. protos_name .. "], {})\n" ..
+        "end\n"
+
+    -- Encrypt wrapper_code using LCG rolling key cipher
+    local key = seed
+    local enc_bytes = {}
+    for i = 1, #wrapper_code do
+        key = (key * 1103515245 + 12345) & 0xFFFFFFFF
+        local b = string.byte(wrapper_code, i)
+        enc_bytes[i] = string.char((b ~ (key >> 16)) & 0xFF)
+    end
+    local encrypted_vm = table.concat(enc_bytes)
+
+    local escaped_vm = {}
+    for i = 1, #encrypted_vm do
+        table.insert(escaped_vm, string.format("\\%d", string.byte(encrypted_vm, i)))
+    end
+
+    local final_output = [=[-- Defense-grade AST-based Virtualized Obfuscation Output
+local vm_a_data = "]=] .. table.concat(escaped_A) .. [=["
+local vm_b_data = "]=] .. table.concat(escaped_B) .. [=["
+local encrypted_vm = "]=] .. table.concat(escaped_vm) .. [=["
+
+local function decrypt(str, seed)
+    local dec = {}
+    local key = seed
+    for i = 1, #str do
+        key = (key * 1103515245 + 12345) & 0xFFFFFFFF
+        local b = string.byte(str, i)
+        dec[i] = string.char((b ~ (key >> 16)) & 0xFF)
+    end
+    return table.concat(dec)
+end
+
+local load_func = loadstring or load
+local vm_factory = load_func(decrypt(encrypted_vm, ]=] .. seed .. [=[))()
+return vm_factory(vm_a_data, vm_b_data, ]=] .. seed .. [=[)
+]=]
 
     return final_output
 end
